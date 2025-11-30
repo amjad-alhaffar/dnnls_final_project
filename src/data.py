@@ -13,70 +13,128 @@ train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
 test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
 
 # @title Main dataset
+# @title Main dataset
 class SequencePredictionDataset(Dataset):
-    def __init__(self, original_dataset, tokenizer):
+    def __init__(self, original_dataset, tokenizer,window_size=5, stride=4):
         super(SequencePredictionDataset, self).__init__()
         self.dataset = original_dataset
         self.tokenizer = tokenizer
+        self.window_size = window_size
+        self.stride = stride
         # Potential experiments: Try other transforms!
         self.transform = transforms.Compose([
           transforms.Resize((60, 125)),# Reasonable size based on our previous analysis
           transforms.ToTensor(), # HxWxC -> CxHxW
         ])
+        self.windows = []
+        for story_idx, example in enumerate(self.dataset):
+            num_frames = example["frame_count"]
+            if num_frames < window_size:
+                continue  # skip very short stories
+
+            # sliding windows with given stride
+            for start in range(0, num_frames - window_size + 1, self.stride):
+                self.windows.append((story_idx, start))
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.windows)
 
     def __getitem__(self, idx):
       """
       Selects a 5 frame sequence from the dataset. Sets 4 for training and the last one
       as a target.
       """
-      num_frames = self.dataset[idx]["frame_count"]
-      frames = self.dataset[idx]["images"]
-      self.image_attributes = parse_gdi_text(self.dataset[idx]["story"])
+      story_idx, start = self.windows[idx]
+      example = self.dataset[story_idx]
+
+      num_frames = example["frame_count"]
+      frames = example["images"]
+      image_attributes = parse_gdi_text(example["story"])
 
       frame_tensors = []
       description_list = []
+      obj_list = []
+      act_list = []
 
-      for frame_idx in range(4):
+      for offset in range(self.window_size - 1): 
+        frame_idx = start + offset
         image = FT.equalize(frames[frame_idx])
         input_frame = self.transform(image)
         frame_tensors.append(input_frame)
-
         # Potential experiments: Try using the other attributes in your training
-        # objects = self.image_attributes[frame_idx]["objects"]
-        # actions = self.image_attributes[frame_idx]["actions"]
-        # locations = self.image_attributes[frame_idx]["locations"]
+        objects = image_attributes[frame_idx]["objects"]
+        actions = image_attributes[frame_idx]["actions"]
 
-        description = self.image_attributes[frame_idx]["description"]
+        description = image_attributes[frame_idx]["description"]
         # We need to return the tokens for NLP
-        input_ids =  self.tokenizer(description,
-                             return_tensors="pt",
-                             padding="max_length",
-                             truncation=True,
-                             max_length=120).input_ids
+        input_ids =  self.tokenizer(
+          description,
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=120
+        ).input_ids
+        object_ids =  self.tokenizer(
+          ", ".join(objects),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids
+        action_ids =  self.tokenizer(
+          ", ".join(actions),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids
 
         description_list.append(input_ids.squeeze(0))
+        obj_list.append(object_ids.squeeze(0))
+        act_list.append(action_ids.squeeze(0))
 
-
-      image_target = FT.equalize(frames[4])
+      target_frame_idx = start + (self.window_size - 1)
+      image_target = FT.equalize(frames[target_frame_idx])
       image_target = self.transform(image_target)
-      text_target = self.image_attributes[4]["description"]
+      text_target = image_attributes[target_frame_idx]["description"]
+      object_target = image_attributes[target_frame_idx]["objects"]
+      action_target = image_attributes[target_frame_idx]["actions"]
 
-      target_ids = self.tokenizer(description,
-                             return_tensors="pt",
-                             padding="max_length",
-                             truncation=True,
-                             max_length=120).input_ids
+      target_ids = self.tokenizer(
+          text_target,
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=120).input_ids.squeeze(0)
+      target_obj =  self.tokenizer(
+          ", ".join(object_target),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids.squeeze(0)
+      target_action =  self.tokenizer(
+          ", ".join(action_target),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids.squeeze(0)
 
-      sequence_tensor = torch.stack(frame_tensors)  # shape: (num_frames, C, H, W)
-      description_tensor = torch.stack(description_list) # (num_frames, max_length)
+      sequence_tensor = torch.stack(frame_tensors)  
+      description_tensor = torch.stack(description_list) 
+      obj_tensor= torch.stack(obj_list)    
+      act_tensor= torch.stack(act_list)
 
-      return (sequence_tensor, # Returning the image
-              description_tensor, # Returning the whole description
-              image_target, # Image target
-              target_ids) # Text target
+      return (sequence_tensor, 
+              description_tensor, 
+              obj_tensor,
+              act_tensor,
+              image_target, 
+              target_ids,
+              target_obj,
+              target_action
+              ) 
 
 # @title Text task dataset (text autoencoding)
 class TextTaskDataset(Dataset):
@@ -120,9 +178,8 @@ class AutoEncoderTaskDataset(Dataset):
 
 # @title For the Sequence prediction task
 tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
-sp_train_dataset = SequencePredictionDataset(train_dataset, tokenizer) # Instantiate the train dataset
-sp_test_dataset = SequencePredictionDataset(test_dataset, tokenizer) # Instantiate the test dataset
-
+sp_train_dataset = SequencePredictionDataset(train_dataset, tokenizer, window_size=5, stride=3) # Instantiate the train dataset
+sp_test_dataset = SequencePredictionDataset(test_dataset, tokenizer, window_size=5, stride=3) # Instantiate the test dataset
 # Let's do things properly, we will also have a validation split
 # Split the training dataset into training and validation sets
 train_size = int(0.8 * len(sp_train_dataset))
@@ -143,13 +200,49 @@ autoencoder_dataset = AutoEncoderTaskDataset(train_dataset)
 autoencoder_dataloader = DataLoader(autoencoder_dataset, batch_size=4, shuffle=True)
 
 # @title Testing some of the outputs of the SP dataset
-frames, descriptions, image_target, text_target = sp_train_dataset[np.random.randint(0,400)]
+(
+    frames,            
+    descriptions,      
+    objects,           
+    actions,           
+    image_target,      
+    target_desc,       
+    target_obj,        
+    target_act         
+) = sp_train_dataset[np.random.randint(0, len(sp_train_dataset))]
 
 print("Description: ", descriptions.shape)
+print("Frames shape:", frames)
+print("Descriptions shape:", descriptions)
+print("Objects shape:", objects)
+print("Actions shape:", actions)
+print("Target desc shape:", target_desc)
+print("Target objects shape:", target_obj)
+print("Target actions shape:", target_act)
 figure, ax = plt.subplots(1,1)
 show_image(ax, image_target)
 
-# Do some tests on the batches (try with batch size small)
-frames, descriptions, image_target, text_target = next(iter(train_dataloader))
-print(frames.shape)
-print(descriptions.shape)
+
+# data visualization
+from collections import Counter
+import matplotlib.pyplot as plt
+
+# Count frames from dataset
+frame_counter_train = Counter()
+for example in train_dataset:
+    num_frames = example["frame_count"]
+    frame_counter_train[num_frames] += 1
+
+min_len = min(5)  
+max_len = max(frame_counter_train.keys())  
+lengths = list(range(min_len, max_len + 1))
+counts = [frame_counter_train.get(l, 0) for l in lengths]
+# Plot
+plt.figure(figsize=(10, 4))
+plt.bar(lengths, counts)
+plt.xticks(lengths)
+plt.xlabel("Number of frames in story")
+plt.ylabel("Number of stories")
+plt.title(f"Story length distribution ({min_len}–{max_len} frames)")
+plt.grid(axis="y", linestyle="--", alpha=0.4)
+plt.show()
