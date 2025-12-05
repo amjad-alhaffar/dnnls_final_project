@@ -46,8 +46,6 @@ class SequencePredictionDataset(Dataset):
       """
       story_idx, start = self.windows[idx]
       example = self.dataset[story_idx]
-
-      num_frames = example["frame_count"]
       frames = example["images"]
       image_attributes = parse_gdi_text(example["story"])
 
@@ -136,23 +134,6 @@ class SequencePredictionDataset(Dataset):
               target_action
               ) 
 
-# @title Text task dataset (text autoencoding)
-class TextTaskDataset(Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-      num_frames = self.dataset[idx]["frame_count"]
-      self.image_attributes = parse_gdi_text(self.dataset[idx]["story"])
-
-      # Pick
-      frame_idx = np.random.randint(0, 5)
-      description = self.image_attributes[frame_idx]["description"]
-
-      return description  # Returning the whole description
 # @title Dataset for image autoencoder task
 class AutoEncoderTaskDataset(Dataset):
     def __init__(self, dataset):
@@ -173,7 +154,7 @@ class AutoEncoderTaskDataset(Dataset):
       frame_idx = torch.randint(0, num_frames-1, (1,)).item()
       input_frame = self.transform(frames[frame_idx]) # Input to the autoencoder
 
-      return input_frame, # Returning the image
+      return input_frame # Returning the image
 
 
 # @title For the Sequence prediction task
@@ -191,10 +172,7 @@ train_dataloader = DataLoader(train_subset, batch_size=8, shuffle=True)
 # We will use the validation set to visualize the progress.
 val_dataloader = DataLoader(val_subset, batch_size=4, shuffle=True)
 test_dataloader = DataLoader(sp_test_dataset, batch_size=4, shuffle=False)
-# @title For the text task
-tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
-text_dataset = TextTaskDataset(train_dataset)
-text_dataloader = DataLoader(text_dataset, batch_size=4, shuffle=True)
+
 # @title For the image autoencoder task
 autoencoder_dataset = AutoEncoderTaskDataset(train_dataset)
 autoencoder_dataloader = DataLoader(autoencoder_dataset, batch_size=4, shuffle=True)
@@ -211,38 +189,39 @@ autoencoder_dataloader = DataLoader(autoencoder_dataset, batch_size=4, shuffle=T
     target_act         
 ) = sp_train_dataset[np.random.randint(0, len(sp_train_dataset))]
 
-print("Description: ", descriptions.shape)
-print("Frames shape:", frames)
-print("Descriptions shape:", descriptions)
-print("Objects shape:", objects)
-print("Actions shape:", actions)
-print("Target desc shape:", target_desc)
-print("Target objects shape:", target_obj)
-print("Target actions shape:", target_act)
-figure, ax = plt.subplots(1,1)
-show_image(ax, image_target)
-
+# print("Description: ", descriptions.shape)
+# print("Frames shape:", frames)
+# print("Descriptions shape:", descriptions)
+# print("Objects shape:", objects)
+# print("Actions shape:", actions)
+# print("Target desc shape:", target_desc)
+# print("Target objects shape:", target_obj)
+# print("Target actions shape:", target_act)
+# figure, ax = plt.subplots(1,1)
+# show_image(ax, image_target)
 
 # data visualization
 from collections import Counter
 import matplotlib.pyplot as plt
 
 # Count frames from dataset
-frame_counter_train = Counter()
-for example in train_dataset:
-    num_frames = example["frame_count"]
-    frame_counter_train[num_frames] += 1
 
-min_len = min(5)  
-max_len = max(frame_counter_train.keys())  
-lengths = list(range(min_len, max_len + 1))
-counts = [frame_counter_train.get(l, 0) for l in lengths]
-# Plot
-plt.figure(figsize=(10, 4))
-plt.bar(lengths, counts)
-plt.xticks(lengths)
-plt.xlabel("Number of frames in story")
-plt.ylabel("Number of stories")
-plt.title(f"Story length distribution ({min_len}–{max_len} frames)")
-plt.grid(axis="y", linestyle="--", alpha=0.4)
-plt.show()
+if __name__ == "__main__":
+  frame_counter_train = Counter()
+  for example in train_dataset:
+      num_frames = example["frame_count"]
+      frame_counter_train[num_frames] += 1
+
+  min_len = min(5)  
+  max_len = max(frame_counter_train.keys())  
+  lengths = list(range(min_len, max_len + 1))
+  counts = [frame_counter_train.get(l, 0) for l in lengths]
+  # Plot
+  plt.figure(figsize=(10, 4))
+  plt.bar(lengths, counts)
+  plt.xticks(lengths)
+  plt.xlabel("Number of frames in story")
+  plt.ylabel("Number of stories")
+  plt.title(f"Story length distribution ({min_len}–{max_len} frames)")
+  plt.grid(axis="y", linestyle="--", alpha=0.4)
+  plt.show()

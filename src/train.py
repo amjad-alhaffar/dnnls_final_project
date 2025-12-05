@@ -11,17 +11,6 @@ latent_dim = 16
 num_layers = 1
 dropout = True
 
-# @title Initializing the NLP models
-encoder = EncoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
-decoder = DecoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
-text_autoencoder = Seq2SeqLSTM(encoder, decoder).to(device)
-text_autoencoder, _, _, _ = load_checkpoint_from_drive(text_autoencoder, None, filename='text_autoencoder.pth')
-
-total_params = sum(p.numel() for p in text_autoencoder.parameters())
-print(f"Total parameters (Not trainable): {total_params}")
-# Deactivating training from this model for efficiency (although not ideal)
-for param in text_autoencoder.parameters():
-        param.requires_grad = False
 
 # @title Initializing visual models
 visual_autoencoder = VisualAutoencoder(latent_dim=16)
@@ -111,37 +100,3 @@ for epoch in range(N_EPOCHS):
 plt.plot(losses)
 plt.show()
 
-# @title Example text reconstruction task
-
-# Don't forget to unfreeze the model!
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(text_autoencoder.parameters(), lr=0.001)
-
-loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.convert_tokens_to_ids(tokenizer.pad_token))
-N_EPOCHS = 5
-
-for epoch in range(N_EPOCHS):
-    text_autoencoder.train()
-    epoch_loss = 0
-    for description in text_dataloader:
-        # Move the "sentences" to device
-        input_ids = tokenizer(description, return_tensors="pt",  padding=True, truncation=True).input_ids
-        input_ids = input_ids.to(device)
-
-        # zero the grad, then forward pass
-        optimizer.zero_grad()
-        outputs = text_autoencoder(input_ids, input_ids)
-        # compute the loss: compare 3D logits to 2D targets
-        loss = loss_fn(outputs.reshape(-1, tokenizer.vocab_size), input_ids[:, 1:].reshape(-1))
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-    print(f"Epoch {epoch+1}/{N_EPOCHS}; Avg loss {epoch_loss/len(text_dataloader)}; Latest loss {loss.item()}")
-    torch.save(text_autoencoder.state_dict(), f"seq2seq-epoch-{epoch+1}.pth")
-
-# # saving checkpoint to drive
-save_checkpoint_to_drive(text_autoencoder, optimizer, 3*N_EPOCHS, loss, filename = "text_autoencoder.pth")
-
-# @title Image reonstruction task
-
-# To-Do: Use previous labs if you want to pretrain your visual encoder

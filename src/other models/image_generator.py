@@ -1,0 +1,1 @@
+# text-image model used to generate last frame using the desctiption
