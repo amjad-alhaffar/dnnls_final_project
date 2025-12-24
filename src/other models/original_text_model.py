@@ -2,7 +2,15 @@
 # @title The text autoencoder (Seq2Seq)
 
 import torch.nn as nn
+from datasets import load_dataset
 
+from torch.utils.data import Dataset, DataLoader, random_split
+from utils import parse_gdi_text
+from torch.utils.data import DataLoader
+from transformers import BertTokenizer
+# === Load the base dataset ===
+train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
+test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
 class EncoderLSTM(nn.Module):
     """
       Encodes a sequence of tokens into a latent space representation.
@@ -70,9 +78,35 @@ class Seq2SeqLSTM(nn.Module):
 
         # predictions shape will be (batch_size, seq_len-1, vocab_size)
         return predictions
+class TextTaskDataset(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.index = []  # list of (story_idx, frame_idx)
 
+        for story_idx, example in enumerate(self.dataset):
+            num_frames = example["frame_count"]
+            for frame_idx in range(num_frames):
+                self.index.append((story_idx, frame_idx))
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, idx):
+        story_idx, frame_idx = self.index[idx]
+        example = self.dataset[story_idx]
+
+        image_attributes = parse_gdi_text(example["story"])
+        description = image_attributes[frame_idx]["description"]
+
+        return description
 
 # @title Initializing the NLP models
+ # @title For the text task
+tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
+text_dataset = TextTaskDataset(train_dataset)
+text_dataloader = DataLoader(text_dataset, batch_size=4, shuffle=True)
+
+tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
 encoder = EncoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
 decoder = DecoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
 text_autoencoder = Seq2SeqLSTM(encoder, decoder).to(device)
