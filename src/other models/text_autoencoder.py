@@ -12,10 +12,6 @@ import gc
 from transformers import DataCollatorForLanguageModeling
 from torch.utils.data import Dataset, DataLoader, random_split
 
-# === Load the base dataset ===
-train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
-test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
-
 class TextTaskDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
@@ -39,11 +35,9 @@ class TextTaskDataset(Dataset):
         return description
     
 def trainingLoop(epochs,data_collator,text_dataloader,tokenizer,device):
-    
-# 3) BERT MLM model + optimizer
+
     model = BertForMaskedLM.from_pretrained("google-bert/bert-base-uncased").to(device)
     optimizer = AdamW(model.parameters(), lr=5e-5)
-
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
@@ -75,25 +69,19 @@ def trainingLoop(epochs,data_collator,text_dataloader,tokenizer,device):
         print(f"Epoch {epoch+1}/{epochs}; Avg loss {epoch_loss/len(text_dataloader)}; Latest loss {loss.item()}")
         # torch.save(model.state_dict(), "/content/drive/MyDrive/bert_mlm_finetuned.pth")
 
-# === Safe execution ===
 if __name__ == "__main__":
+    train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
+    test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
     tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased")
     text_dataset = TextTaskDataset(train_dataset)
-    dataloader = DataLoader(text_dataset, batch_size=4, shuffle=True)
+    dataloader = DataLoader(text_dataset, batch_size=32, shuffle=True)
 
 # @title Example text reconstruction task
     torch.cuda.empty_cache()
     gc.collect()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     print(device)
-    import os
-
-    print(os.path.exists("/content/drive/MyDrive"))
-
-
     N_EPOCHS = 3
-
     tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased", padding=True, truncation=True)
     text_dataset = TextTaskDataset(train_dataset)
     text_dataset.index = text_dataset.index[:10000]

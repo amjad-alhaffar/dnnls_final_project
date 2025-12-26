@@ -3,14 +3,17 @@
 
 import torch.nn as nn
 from datasets import load_dataset
+from transformers import BertTokenize
 
+from torch.cuda.amp import autocast, GradScaler
+import gc
+import torch
+from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader, random_split
 from utils import parse_gdi_text
 from torch.utils.data import DataLoader
 from transformers import BertTokenizer
-# === Load the base dataset ===
-train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
-test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
+
 class EncoderLSTM(nn.Module):
     """
       Encodes a sequence of tokens into a latent space representation.
@@ -100,54 +103,75 @@ class TextTaskDataset(Dataset):
 
         return description
 
-# @title Initializing the NLP models
- # @title For the text task
-tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
-text_dataset = TextTaskDataset(train_dataset)
-text_dataloader = DataLoader(text_dataset, batch_size=4, shuffle=True)
 
-tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
-encoder = EncoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
-decoder = DecoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
-text_autoencoder = Seq2SeqLSTM(encoder, decoder).to(device)
-text_autoencoder, _, _, _ = load_checkpoint_from_drive(text_autoencoder, None, filename='text_autoencoder.pth')
 
-total_params = sum(p.numel() for p in text_autoencoder.parameters())
-print(f"Total parameters (Not trainable): {total_params}")
-# Deactivating training from this model for efficiency (although not ideal)
-for param in text_autoencoder.parameters():
-        param.requires_grad = False
-# @title Example text reconstruction task
+def tainingLoop(text_dataloader,text_autoencoder,tokenizer):
+    optimizer = torch.optim.Adam(text_autoencoder.parameters(), lr=0.001)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.convert_tokens_to_ids(tokenizer.pad_token))
+    scaler = GradScaler()  # helps stabilize mixed precision training
+    N_EPOCHS = 25
 
-# Don't forget to unfreeze the model!
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(text_autoencoder.parameters(), lr=0.001)
+    for epoch in range(N_EPOCHS):
+        text_autoencoder.train()
+        epoch_loss = 0.0
+        for step, descriptions in enumerate(text_dataloader):
+            batch = tokenizer(
+                descriptions,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            ).to(device)
 
-loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.convert_tokens_to_ids(tokenizer.pad_token))
-N_EPOCHS = 5
+            input_ids = batch["input_ids"]
+            optimizer.zero_grad()
+            # Mixed precision forward + backward
+            with autocast():
+                outputs = text_autoencoder(input_ids, input_ids)
+                loss = loss_fn(
+                    outputs.reshape(-1, tokenizer.vocab_size),
+                    input_ids[:, 1:].reshape(-1)
+                )
 
-for epoch in range(N_EPOCHS):
-    text_autoencoder.train()
-    epoch_loss = 0
-    for description in text_dataloader:
-        # Move the "sentences" to device
-        input_ids = tokenizer(description, return_tensors="pt",  padding=True, truncation=True).input_ids
-        input_ids = input_ids.to(device)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-        # zero the grad, then forward pass
-        optimizer.zero_grad()
-        outputs = text_autoencoder(input_ids, input_ids)
-        # compute the loss: compare 3D logits to 2D targets
-        loss = loss_fn(outputs.reshape(-1, tokenizer.vocab_size), input_ids[:, 1:].reshape(-1))
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-    print(f"Epoch {epoch+1}/{N_EPOCHS}; Avg loss {epoch_loss/len(text_dataloader)}; Latest loss {loss.item()}")
-    torch.save(text_autoencoder.state_dict(), f"seq2seq-epoch-{epoch+1}.pth")
+            epoch_loss += loss.item()
+            if step % 100 == 0:
+                print(f"[Epoch {epoch+1}] Step {step} | Loss: {loss.item():.4f}")
 
-# # saving checkpoint to drive
-save_checkpoint_to_drive(text_autoencoder, optimizer, 3*N_EPOCHS, loss, filename = "text_autoencoder.pth")
+        avg_loss = epoch_loss / len(text_dataloader)
+        print(f"Epoch {epoch+1}/{N_EPOCHS} | Avg loss: {avg_loss:.4f}")
+        # if (epoch + 1) % 5 == 0:
+        #     torch.save(text_autoencoder.state_dict(), f"/content/seq2seq-epoch-{epoch+1}.pth")
+        #     print("saved")
 
-# @title Image reonstruction task
 
-# To-Do: Use previous labs if you want to pretrain your visual encoder
+if __name__ == "__main__":
+    # @title Example text reconstruction task
+    train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
+    test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
+    torch.cuda.empty_cache()
+    gc.collect()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    emb_dim = 32
+    latent_dim = 32
+    num_layers = 1
+    dropout = 0.1
+    tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased", padding=True, truncation=True)
+    text_dataset = TextTaskDataset(train_dataset)
+    text_dataset.index = text_dataset.index[:10000]
+    text_dataloader = DataLoader(text_dataset, batch_size=32, shuffle=True)
+    tokens = tokenizer(text_dataset[0])
+    print(len(tokens["input_ids"]))
+
+    print("Number of descriptions in training set:", len(text_dataset))
+    print("Number of batches per epoch:", len(text_dataloader))
+
+    encoder = EncoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
+    decoder = DecoderLSTM(tokenizer.vocab_size, emb_dim, latent_dim, num_layers, dropout).to(device)
+    text_autoencoder = Seq2SeqLSTM(encoder, decoder).to(device)
+    tainingLoop(text_dataloader,text_autoencoder,tokenizer)
+    # save_checkpoint_to_drive(text_autoencoder, optimizer, 3*N_EPOCHS, loss, filename = "text_autoencoder.pth")
