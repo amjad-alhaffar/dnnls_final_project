@@ -5,14 +5,104 @@ from transformers import BertTokenizer
 import torch
 import torchvision.transforms.functional as FT
 import matplotlib.pyplot as plt
+from collections import Counter
 import numpy as np
-
 from torch.utils.data import Dataset, DataLoader, random_split
 # @title Loading the dataset
 train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
 test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
 
-# @title Main dataset
+# @title Only Text dataset
+class SeqTextPredictionDataset(Dataset):
+    def __init__(self, original_dataset, tokenizer,window_size=5, stride=4):
+        super(SeqTextPredictionDataset, self).__init__()
+        self.dataset = original_dataset
+        self.tokenizer = tokenizer
+        self.window_size = window_size
+        self.stride = stride
+        self.windows = []
+        for story_idx, example in enumerate(self.dataset):
+            num_frames = example["frame_count"]
+            if num_frames < window_size:
+                continue  # skip very short stories
+
+            # sliding windows with given stride
+            for start in range(0, num_frames - window_size + 1, self.stride):
+                self.windows.append((story_idx, start))
+
+    def __len__(self):
+        return len(self.windows)
+
+    def __getitem__(self, idx):
+      """
+      Selects a 5 frame sequence from the dataset. Sets 4 for training and the last one
+      as a target.
+      """
+      story_idx, start = self.windows[idx]
+      example = self.dataset[story_idx]
+
+      num_frames = example["frame_count"]
+      # frames = example["images"]
+      image_attributes = parse_gdi_text(example["story"])
+
+      description_list = []
+      obj_list = []
+      act_list = []
+
+      for offset in range(self.window_size - 1):
+        frame_idx = start + offset
+        # Potential experiments: Try using the other attributes in your training
+        objects = image_attributes[frame_idx]["objects"]
+        actions = image_attributes[frame_idx]["actions"]
+        description = image_attributes[frame_idx]["description"]
+        # We need to return the tokens for NLP
+        input_ids =  self.tokenizer(
+          description,
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=120
+        ).input_ids
+        object_ids =  self.tokenizer(
+          ", ".join(objects),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids
+        action_ids =  self.tokenizer(
+          ", ".join(actions),
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=20
+        ).input_ids
+
+        description_list.append(input_ids.squeeze(0))
+        obj_list.append(object_ids.squeeze(0))
+        act_list.append(action_ids.squeeze(0))
+
+      target_frame_idx = start + (self.window_size - 1)
+      text_target = image_attributes[target_frame_idx]["description"]
+      target_ids = self.tokenizer(
+          text_target,
+          return_tensors="pt",
+          padding="max_length",
+          truncation=True,
+          max_length=120).input_ids.squeeze(0)
+
+      description_tensor = torch.stack(description_list)
+      obj_tensor= torch.stack(obj_list)
+      act_tensor= torch.stack(act_list)
+
+      return (
+              description_tensor,
+              obj_tensor,
+              act_tensor,
+              target_ids,
+              )
+
+
 # @title Main dataset
 class SequencePredictionDataset(Dataset):
     def __init__(self, original_dataset, tokenizer,window_size=5, stride=4):
@@ -189,20 +279,7 @@ autoencoder_dataloader = DataLoader(autoencoder_dataset, batch_size=4, shuffle=T
     target_act         
 ) = sp_train_dataset[np.random.randint(0, len(sp_train_dataset))]
 
-# print("Description: ", descriptions.shape)
-# print("Frames shape:", frames)
-# print("Descriptions shape:", descriptions)
-# print("Objects shape:", objects)
-# print("Actions shape:", actions)
-# print("Target desc shape:", target_desc)
-# print("Target objects shape:", target_obj)
-# print("Target actions shape:", target_act)
-# figure, ax = plt.subplots(1,1)
-# show_image(ax, image_target)
 
-# data visualization
-from collections import Counter
-import matplotlib.pyplot as plt
 
 # Count frames from dataset
 
