@@ -8,9 +8,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, random_split
-# @title Loading the dataset
-train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
-test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
+
 
 # @title Only Text dataset
 class SeqTextPredictionDataset(Dataset):
@@ -247,43 +245,29 @@ class AutoEncoderTaskDataset(Dataset):
       return input_frame # Returning the image
 
 
-# @title For the Sequence prediction task
-tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
-sp_train_dataset = SequencePredictionDataset(train_dataset, tokenizer, window_size=5, stride=3) # Instantiate the train dataset
-sp_test_dataset = SequencePredictionDataset(test_dataset, tokenizer, window_size=5, stride=3) # Instantiate the test dataset
-# Let's do things properly, we will also have a validation split
-# Split the training dataset into training and validation sets
-train_size = int(0.8 * len(sp_train_dataset))
-val_size = len(sp_train_dataset) - train_size
-train_subset, val_subset = random_split(sp_train_dataset, [train_size, val_size])
-
-# Instantiate the dataloaders
-train_dataloader = DataLoader(train_subset, batch_size=8, shuffle=True)
-# We will use the validation set to visualize the progress.
-val_dataloader = DataLoader(val_subset, batch_size=4, shuffle=True)
-test_dataloader = DataLoader(sp_test_dataset, batch_size=4, shuffle=False)
-
-# @title For the image autoencoder task
-autoencoder_dataset = AutoEncoderTaskDataset(train_dataset)
-autoencoder_dataloader = DataLoader(autoencoder_dataset, batch_size=4, shuffle=True)
-
-# @title Testing some of the outputs of the SP dataset
-(
-    frames,            
-    descriptions,      
-    objects,           
-    actions,           
-    image_target,      
-    target_desc,       
-    target_obj,        
-    target_act         
-) = sp_train_dataset[np.random.randint(0, len(sp_train_dataset))]
 
 
 
 # Count frames from dataset
 
 if __name__ == "__main__":
+  
+  train_dataset = load_dataset("daniel3303/StoryReasoning", split="train")
+  test_dataset = load_dataset("daniel3303/StoryReasoning", split="test")
+  tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
+  sp_train_dataset = SequencePredictionDataset(train_dataset, tokenizer, window_size=5, stride=3) # Instantiate the train dataset
+  sp_test_dataset = SequencePredictionDataset(test_dataset, tokenizer, window_size=5, stride=3) # Instantiate the test dataset
+  # Let's do things properly, we will also have a validation split
+  # Split the training dataset into training and validation sets
+  train_size = int(0.8 * len(sp_train_dataset))
+  val_size = len(sp_train_dataset) - train_size
+  train_subset, val_subset = random_split(sp_train_dataset, [train_size, val_size])
+
+  # Instantiate the dataloaders
+  train_dataloader = DataLoader(train_subset, batch_size=8, shuffle=True)
+  # We will use the validation set to visualize the progress.
+  val_dataloader = DataLoader(val_subset, batch_size=4, shuffle=True)
+  test_dataloader = DataLoader(sp_test_dataset, batch_size=4, shuffle=False)
   frame_counter_train = Counter()
   for example in train_dataset:
       num_frames = example["frame_count"]
