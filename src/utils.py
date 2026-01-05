@@ -194,76 +194,113 @@ def generate(model, hidden, cell, max_len, sos_token_id, eos_token_id):
       return generated_tokens
 
 
-# Plots four images and their reconstructions
-def validation( model, data_loader ):
-  model.eval()
-  with torch.no_grad():
-    frames, descriptions, image_target, text_target = next(iter(data_loader))
+# @title Adding Metrices
+# !pip install rouge-score
+from rouge_score import rouge_scorer
 
-    descriptions = descriptions.to(device)
-    frames = frames.to(device)
-    image_target = image_target.to(device)
-    text_target = text_target.to(device)
+def compute_rouge_l(pred_texts, ref_texts):
+    scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
+    scores = []
+    for pred, ref in zip(pred_texts, ref_texts):
+        score = scorer.score(ref, pred)["rougeL"].fmeasure
+        scores.append(score)
+    return sum(scores) / len(scores)
 
-    predicted_image_k,context_image, _, hidden, cell = model(frames, descriptions, text_target)
+rouge_scorer_single = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
 
-    figure, ax = plt.subplots(2, 6, figsize=(20, 5), gridspec_kw={'height_ratios': [2, 1.5]})
+def rouge_l_single(pred_text, ref_text):
+    return rouge_scorer_single.score(ref_text, pred_text)["rougeL"].fmeasure
 
-    for i in range(4):
-      im = frames[0, i, :, :, :].cpu()
-      show_image(ax[0,i], im )
-      ax[0,i].set_aspect('auto')
-      ax[0,i].axis('off')
-      wrapped_text = textwrap.fill(tokenizer.decode(descriptions[0, i, :], skip_special_tokens=True), width=40)
+# !pip install sentence-transformers
+from sentence_transformers import SentenceTransformer
+import torch.nn.functional as F
 
-      ax[1,i].text(
-            0.5, 0.99,
-            wrapped_text,
-            ha='center',
-            va='top',
-            fontsize=10,
-            wrap=True
-        )
+semantic_model = SentenceTransformer("all-MiniLM-L6-v2").to(device)
+semantic_model.eval()
 
-      ax[1,i].axis('off') # Hide axes for the text subplot
+def compute_semantic_similarity(pred_texts, ref_texts):
+    sims = []
+    with torch.no_grad():
+        for pred, ref in zip(pred_texts, ref_texts):
+            emb = semantic_model.encode(
+                [pred, ref],
+                convert_to_tensor=True,
+                device=device
+            )
+            sim = F.cosine_similarity(emb[0], emb[1], dim=0)
+            sims.append(sim.item())
+    return sum(sims) / len(sims)
 
-    show_image(ax[0,4], image_target[0].cpu())
-    ax[0,4].set_title('Target')
-    ax[0,4].set_aspect('auto')
-    ax[0,4].axis('off')
-    text_target = text_target.squeeze(1)
 
-    wrapped_text = textwrap.fill(tokenizer.decode(text_target[0], skip_special_tokens=True), width=40)
-    ax[1,4].text(
-            0.5, 0.99,
-            wrapped_text,
-            ha='center',
-            va='top',
-            fontsize=10,
-            wrap=False)
-    ax[1,4].axis('off')
-    output = context_image[0, :, :, :].cpu()
-    show_image(ax[0,5], output)
-    ax[0,5].set_title('Predicted')
-    ax[0,5].set_aspect('auto')
-    ax[0,5].axis('off')
 
-    generated_tokens = generate(model.text_decoder,
-                                hidden[:,0, :].unsqueeze(1),
-                                cell[:, 0, :].unsqueeze(1),
-                                max_len=150,
-                                sos_token_id=tokenizer.cls_token_id,
-                                eos_token_id=tokenizer.sep_token_id)
+# @title Validation functions: To initialize and to visualize the progress
 
-    wrapped_text = textwrap.fill(tokenizer.decode(generated_tokens), width=40)
+def validation(model, data_loader, criterion, max_gen_len=120):
+    model.eval()
 
-    ax[1,5].text(
-            0.5, 0.99,
-            wrapped_text,
-            ha='center',
-            va='top',
-            fontsize=10,
-            wrap=False )
-    ax[1,5].axis('off')
-    plt.tight_layout()
-    plt.show()
+    total_loss = 0.0
+    total_tokens = 0
+    pred_texts = []
+    ref_texts  = []
+    printed_sample = False
+
+    with torch.no_grad():
+        for desc_emb, obj_emb, act_emb, text_target in data_loader:
+
+            desc_emb = desc_emb.to(device)
+            obj_emb  = obj_emb.to(device)
+            act_emb  = act_emb.to(device)
+            text_target = text_target.to(device)
+
+            # ---------- Teacher forcing ----------
+            logits = model(desc_emb, obj_emb, act_emb, text_target)
+
+            target_labels = text_target[:, 1:]
+            prediction_flat = logits.reshape(-1, tokenizer.vocab_size)
+            target_flat = target_labels.reshape(-1)
+
+            loss = criterion(prediction_flat, target_flat)
+
+            total_loss += loss.item() * target_flat.size(0)
+            total_tokens += target_flat.size(0)
+
+            # ---------- Generation (for metrics) ----------
+            pred_text = generate(
+                model,
+                desc_emb[:1],
+                obj_emb[:1],
+                act_emb[:1],
+                tokenizer=tokenizer,
+                max_len=max_gen_len,
+                temperature=0.7
+            )
+
+            ref_text = tokenizer.decode(
+                text_target[0], skip_special_tokens=True
+            )
+
+            pred_texts.append(pred_text)
+            ref_texts.append(ref_text)
+
+            # ---------- Print ONE qualitative example ----------
+            if not printed_sample:
+                printed_sample = True
+                import textwrap
+                print("\n" + "=" * 80)
+                print("TARGET:")
+                print(textwrap.fill(ref_text, 100))
+                print("\nPREDICTED:")
+                print(textwrap.fill(pred_text, 100))
+                print("=" * 80 + "\n")
+
+    avg_loss = total_loss / total_tokens
+    avg_rouge = compute_rouge_l(pred_texts, ref_texts)
+
+    # semantic similarity averaged properly
+    avg_sem = compute_semantic_similarity(pred_texts, ref_texts)
+
+
+    return avg_loss, avg_rouge, avg_sem
+
+
+
