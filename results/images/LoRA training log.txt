@@ -1,0 +1,69 @@
+The following values were not passed to `accelerate launch` and had defaults used instead:
+	`--num_processes` was set to a value of `1`
+	`--num_machines` was set to a value of `1`
+	`--mixed_precision` was set to a value of `'no'`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+2026-01-05 18:11:44.181958: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1767636704.464131    4430 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1767636704.534926    4430 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1767636705.079844    4430 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1767636705.079894    4430 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1767636705.079919    4430 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1767636705.079927    4430 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2026-01-05 18:11:45.135757: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX512F FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+INFO:__main__:Distributed environment: DistributedType.NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: fp16
+
+scheduler_config.json: 100% 308/308 [00:00<00:00, 1.93MB/s]
+{'timestep_spacing', 'sample_max_value', 'rescale_betas_zero_snr', 'thresholding', 'prediction_type', 'variance_type', 'clip_sample_range', 'dynamic_thresholding_ratio'} was not found in config. Values will be initialized to default values.
+tokenizer_config.json: 100% 806/806 [00:00<00:00, 6.65MB/s]
+vocab.json: 1.06MB [00:00, 96.0MB/s]
+merges.txt: 525kB [00:00, 142MB/s]
+special_tokens_map.json: 100% 472/472 [00:00<00:00, 4.50MB/s]
+config.json: 100% 617/617 [00:00<00:00, 4.68MB/s]
+text_encoder/model.safetensors: 100% 492M/492M [00:05<00:00, 93.7MB/s]
+config.json: 100% 547/547 [00:00<00:00, 3.49MB/s]
+vae/diffusion_pytorch_model.safetensors: 100% 335M/335M [00:02<00:00, 117MB/s]
+{'use_post_quant_conv', 'use_quant_conv', 'latents_std', 'mid_block_add_attention', 'force_upcast', 'shift_factor', 'scaling_factor', 'latents_mean'} was not found in config. Values will be initialized to default values.
+All model checkpoint weights were used when initializing AutoencoderKL.
+
+All the weights of AutoencoderKL were initialized from the model checkpoint at runwayml/stable-diffusion-v1-5.
+If your task is similar to the task the model of the checkpoint was trained on, you can already use AutoencoderKL for predictions without further training.
+config.json: 100% 743/743 [00:00<00:00, 4.23MB/s]
+unet/diffusion_pytorch_model.safetensors: 100% 3.44G/3.44G [01:46<00:00, 32.3MB/s]
+{'timestep_post_act', 'resnet_time_scale_shift', 'class_embed_type', 'attention_type', 'addition_embed_type', 'addition_time_embed_dim', 'cross_attention_norm', 'addition_embed_type_num_heads', 'transformer_layers_per_block', 'time_embedding_act_fn', 'num_attention_heads', 'time_embedding_type', 'time_cond_proj_dim', 'num_class_embeds', 'time_embedding_dim', 'class_embeddings_concat', 'conv_out_kernel', 'resnet_out_scale_factor', 'use_linear_projection', 'resnet_skip_time_act', 'encoder_hid_dim', 'conv_in_kernel', 'only_cross_attention', 'mid_block_only_cross_attention', 'projection_class_embeddings_input_dim', 'upcast_attention', 'mid_block_type', 'encoder_hid_dim_type', 'reverse_transformer_layers_per_block', 'dropout', 'dual_cross_attention'} was not found in config. Values will be initialized to default values.
+All model checkpoint weights were used when initializing UNet2DConditionModel.
+
+All the weights of UNet2DConditionModel were initialized from the model checkpoint at runwayml/stable-diffusion-v1-5.
+If your task is similar to the task the model of the checkpoint was trained on, you can already use UNet2DConditionModel for predictions without further training.
+Resolving data files: 100% 2001/2001 [00:00<00:00, 25170.81it/s]
+Downloading data: 100% 1001/1001 [00:00<00:00, 28130.45files/s]
+Downloading data: 100% 1000/1000 [00:00<00:00, 27870.80files/s]
+Generating train split: 1000 examples [00:00, 15204.30 examples/s]
+INFO:__main__:***** Running training *****
+INFO:__main__:  Num examples = 1000
+INFO:__main__:  Num Epochs = 4
+INFO:__main__:  Instantaneous batch size per device = 1
+INFO:__main__:  Total train batch size (w. parallel, distributed & accumulation) = 8
+INFO:__main__:  Gradient Accumulation steps = 8
+INFO:__main__:  Total optimization steps = 500
+Steps: 100% 500/500 [15:02<00:00,  1.69s/it, lr=0.0001, step_loss=0.00499]INFO:accelerate.accelerator:Saving current state to /content/drive/MyDrive/lora-output/checkpoint-500
+Model weights saved in /content/drive/MyDrive/lora-output/checkpoint-500/pytorch_lora_weights.safetensors
+INFO:accelerate.checkpointing:Optimizer state saved in /content/drive/MyDrive/lora-output/checkpoint-500/optimizer.bin
+INFO:accelerate.checkpointing:Scheduler state saved in /content/drive/MyDrive/lora-output/checkpoint-500/scheduler.bin
+INFO:accelerate.checkpointing:Sampler state for dataloader 0 saved in /content/drive/MyDrive/lora-output/checkpoint-500/sampler.bin
+INFO:accelerate.checkpointing:Gradient scaler state saved in /content/drive/MyDrive/lora-output/checkpoint-500/scaler.pt
+INFO:accelerate.checkpointing:Random states saved in /content/drive/MyDrive/lora-output/checkpoint-500/random_states_0.pkl
+INFO:__main__:Saved state to /content/drive/MyDrive/lora-output/checkpoint-500
+Steps: 100% 500/500 [15:03<00:00,  1.69s/it, lr=0.0001, step_loss=0.531]  Model weights saved in /content/drive/MyDrive/lora-output/pytorch_lora_weights.safetensors
+Steps: 100% 500/500 [15:03<00:00,  1.81s/it, lr=0.0001, step_loss=0.531]

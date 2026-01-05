@@ -463,5 +463,4 @@ def __init__():
         patience=3,
     )
 
-    losses=trainingLoop(sequence_predictor,train_dataloader_c,val_dataloader_c,tokenizer,criterion_text,scheduler,N_EPOCHS)
-    plotSequancePredcition(train_losses,val_losses,val_rouge_l,val_sem_sim,sequence_predictor,test_dataloader_c,criterion_text)
+    trainingLoop(sequence_predictor,train_dataloader_c,val_dataloader_c,tokenizer,criterion_text,scheduler,N_EPOCHS)
