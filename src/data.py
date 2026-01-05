@@ -100,6 +100,59 @@ class SeqTextPredictionDataset(Dataset):
               target_ids,
               )
 
+# @title text-image dataset
+from transformers import CLIPTokenizer
+import re
+clip_tokenizer = CLIPTokenizer.from_pretrained(
+    "openai/clip-vit-large-patch14"
+)
+def clean_dialogue(text):
+    # remove anything inside quotes (dialogue)
+    text = re.sub(r'".*?"', '', text)
+    text = re.sub(r"'.*?'", '', text)
+
+    # remove leftover punctuation noise
+    text = re.sub(r'\s+', ' ', text)
+    text = text.replace('\n', ' ').strip()
+
+    return text
+
+class DiffusionFrameDatasetExport(Dataset):
+    def __init__(self, raw_dataset, transform=None, max_prompt_len=60):
+        self.dataset = raw_dataset
+        self.max_prompt_len = max_prompt_len
+
+        self.transform = transform or transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(256),
+            transforms.ToTensor(),
+        ])
+
+        self.samples = []
+        for example in self.dataset:
+            attrs = parse_gdi_text(example["story"])
+            for i, img in enumerate(example["images"]):
+                self.samples.append((img, attrs[i]["description"]))
+
+    def __len__(self):
+        return len(self.samples)
+
+    def clean_prompt(self, text):
+        text = text.lower()
+        text = clean_dialogue(text)
+        return " ".join(text.split()[:self.max_prompt_len])
+
+    def __getitem__(self, idx):
+        image, description = self.samples[idx]
+        image = FT.equalize(image)
+        image = self.transform(image)
+        prompt = self.clean_prompt(description)
+
+        return {
+            "pixel_values": image,
+            "prompt": prompt
+        }
+
 
 # @title Main dataset
 class SequencePredictionDataset(Dataset):

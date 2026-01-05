@@ -143,55 +143,64 @@ def show_image(ax, image, de_normalize = False, img_mean = None, img_std = None)
     )(image)
   ax.imshow(image.permute(1, 2, 0))
 
-# @title Utility functions for NLP tasks
-def generate(model, hidden, cell, max_len, sos_token_id, eos_token_id):
-      """
-        This function generates a sequence of tokens using the provided decoder.
-      """
-      # Ensure the model is in evaluation mode
-      model.eval()
+# @title Generate helper fucntion
 
-      # 2. SETUP DECODER INPUT
-      # Start with the SOS token, shape (1, 1)
-      dec_input = torch.tensor([[sos_token_id]], dtype=torch.long, device=device)
-      # hidden = torch.zeros(1, 1, hidden_dim, device=device)
-      # cell = torch.zeros(1, 1, hidden_dim, device=device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+@torch.no_grad()
+def generate(
+    model,
+    desc_emb,
+    obj_emb,
+    act_emb,
+    tokenizer,
+    max_len,
+    temperature=0.7
+):
+    device = desc_emb.device
 
-      generated_tokens = []
+    # ---------- projections ----------
+    desc = model.text_proj(desc_emb)   # [B, S, D]
+    obj  = model.obj_proj(obj_emb)
+    act  = model.act_proj(act_emb)
 
-      # 3. AUTOREGRESSIVE LOOP
-      for _ in range(max_len):
-          with torch.no_grad():
-              # Run the decoder one step at a time
-              # dec_input is (1, 1) here—it's just the last predicted token
-              prediction, hidden, cell = model(dec_input, hidden, cell)
+    # ---------- gated conditioning ----------
+    cond = torch.cat([obj, act], dim=-1)          # [B, S, 2D]
+    gate = torch.sigmoid(model.gate_layer(cond))  # [B, S, D]
+    desc = desc * gate                             # [B, S, D]
 
-          logits = prediction.squeeze(1) # Shape (1, vocab_size)
-          temperature = 0.9 # <--- Try a value between 0.5 and 1.0
+    # ---------- temporal reasoning ----------
+    zseq, _ = model.temporal_rnn(desc)             # [B, S, D]
 
-          # 1. Divide logits by temperature
-          # 2. Apply softmax to get probabilities
-          # 3. Use multinomial to sample one token based on the probabilities
-          probabilities = torch.softmax(logits / temperature, dim=-1)
-          next_token = torch.multinomial(probabilities, num_samples=1)
+    # ---------- attention ----------
+    context = model.attention(zseq)                # [B, D]
+    h_last = zseq[:, -1]                            # [B, D]
 
-          token_id = next_token.squeeze().item()
+    z = model.projection(torch.cat([h_last, context], dim=1))  # [B, H]
 
-          # Check for the End-of-Sequence token
-          if token_id == eos_token_id:
-              break
+    # ---------- decoder init ----------
+    num_layers = model.text_decoder.gru.num_layers
+    h0 = z.unsqueeze(0).repeat(num_layers, 1, 1)
 
-          if token_id == 0 or token_id == sos_token_id:
-              continue
+    # ---------- autoregressive decoding ----------
+    sos = tokenizer.cls_token_id
+    eos = tokenizer.sep_token_id
 
-            # Append the predicted token
-          generated_tokens.append(token_id)
+    generated = torch.tensor([[sos]], device=device)
 
-          # The predicted token becomes the input for the next iteration
-          dec_input = next_token
+    for _ in range(max_len):
+        logits = model.text_decoder(generated, h0)
+        next_logits = logits[:, -1, :] / temperature
+        probs = torch.softmax(next_logits, dim=-1)
+        next_token = torch.multinomial(probs, 1)
 
-      # Return the list of generated token IDs
-      return generated_tokens
+        if next_token.item() == eos:
+            break
+
+        generated = torch.cat([generated, next_token], dim=1)
+
+    return tokenizer.decode(generated[0], skip_special_tokens=True)
+
+
 
 
 # @title Adding Metrices
@@ -231,10 +240,32 @@ def compute_semantic_similarity(pred_texts, ref_texts):
             sims.append(sim.item())
     return sum(sims) / len(sims)
 
+# @title Semantic text loss
+from sentence_transformers import SentenceTransformer
+import torch.nn.functional as F
+
+semantic_model = SentenceTransformer("all-MiniLM-L6-v2").to(device)
+semantic_model.eval()
+def semantic_loss(pred_texts, ref_texts):
+    with torch.no_grad():  # IMPORTANT: no gradients here
+        emb_pred = semantic_model.encode(
+            pred_texts,
+            convert_to_tensor=True,
+            device=device
+        )
+        emb_ref = semantic_model.encode(
+            ref_texts,
+            convert_to_tensor=True,
+            device=device
+        )
+
+        sim = F.cosine_similarity(emb_pred, emb_ref, dim=1)
+        loss = 1.0 - sim.mean()
+
+    return loss
 
 
 # @title Validation functions: To initialize and to visualize the progress
-
 def validation(model, data_loader, criterion, max_gen_len=120):
     model.eval()
 
@@ -299,8 +330,92 @@ def validation(model, data_loader, criterion, max_gen_len=120):
     # semantic similarity averaged properly
     avg_sem = compute_semantic_similarity(pred_texts, ref_texts)
 
-
     return avg_loss, avg_rouge, avg_sem
 
 
+# @title Caching BERT embeddings for train/val/test
+from tqdm.auto import tqdm
 
+def cach_data(name, loader,text_autoencoder):
+    desc_embs, obj_embs, act_embs, targets = [], [], [], []
+    text_autoencoder.eval()
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc=f"Caching {name}"):
+            descriptions, objects, actions, text_target = batch
+            descriptions = descriptions.to(device)
+            objects = objects.to(device)
+            actions = actions.to(device)
+
+            # dynamic dims
+            b, seq_len, desc_len = descriptions.shape
+            obj_len = objects.shape[2]
+            act_len = actions.shape[2]
+
+            # flatten first two dims
+            desc_flat = descriptions.view(b * seq_len, desc_len)
+            obj_flat  = objects.view(b * seq_len, obj_len)
+            act_flat  = actions.view(b * seq_len, act_len)
+
+            # run BERT
+            desc_out = text_autoencoder.bert(desc_flat).last_hidden_state[:, 0, :].cpu()
+            obj_out  = text_autoencoder.bert(obj_flat).last_hidden_state[:, 0, :].cpu()
+            act_out  = text_autoencoder.bert(act_flat).last_hidden_state[:, 0, :].cpu()
+
+            # reshape back
+            hidden_dim = desc_out.size(-1)  # should be 768
+            desc_out = desc_out.view(b, seq_len, hidden_dim)
+            obj_out  = obj_out.view(b, seq_len, hidden_dim)
+            act_out  = act_out.view(b, seq_len, hidden_dim)
+
+            desc_embs.append(desc_out)
+            obj_embs.append(obj_out)
+            act_embs.append(act_out)
+            targets.append(text_target.cpu())
+
+    # concatenate all
+    desc_embs = torch.cat(desc_embs)
+    obj_embs  = torch.cat(obj_embs)
+    act_embs  = torch.cat(act_embs)
+    targets   = torch.cat(targets)
+
+    torch.save({
+        "desc": desc_embs,
+        "obj": obj_embs,
+        "act": act_embs,
+        "target": targets
+    }, f"/content/gdrive/MyDrive/BERTcach/cached_bert_embeddings_{name}.pt")
+
+    print(f"✅ Cached {name} BERT features saved successfully!")
+
+
+# @title Description Task Results
+def plotSequancePredcition(train_losses,val_losses,val_rouge_l,val_sem_sim,sequence_predictor,test_dataloader_c,criterion_text):
+    plt.figure()
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training vs Validation Loss")
+    plt.show()
+
+    plt.figure()
+    plt.plot(val_rouge_l, label="ROUGE-L")
+    plt.plot(val_sem_sim, label="Semantic Similarity")
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.legend()
+    plt.title("Validation Metrics")
+    plt.show()
+
+    test_loss, test_rouge, test_sem = validation(
+        sequence_predictor,
+        test_dataloader_c,
+        criterion_text
+    )
+
+    print("TEST SET PERFORMANCE")
+    print(f"Loss: {test_loss:.4f}")
+    print(f"ROUGE-L: {test_rouge:.4f}")
+    print(f"Semantic Similarity: {test_sem:.4f}")

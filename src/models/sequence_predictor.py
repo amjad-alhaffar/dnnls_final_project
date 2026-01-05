@@ -14,7 +14,7 @@ from transformers import BertTokenizer, BertForMaskedLM
 # @title Only Text dataset
 class SeqTextPredictionDataset(Dataset):
     def __init__(self, original_dataset, tokenizer,window_size=5, stride=4):
-        super(SequencePredictionDataset, self).__init__()
+        super(SeqTextPredictionDataset, self).__init__()
         self.dataset = original_dataset
         self.tokenizer = tokenizer
         self.window_size = window_size
@@ -101,6 +101,7 @@ class SeqTextPredictionDataset(Dataset):
               target_ids,
               )
 
+
 # @title A simple attention architecture
 
 class Attention(nn.Module):
@@ -128,100 +129,174 @@ class Attention(nn.Module):
         return context.squeeze(1) # Shape: [batch, hidden_dim]
 
 # @title The main sequence predictor model
+class TextDecoderGRU(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        emb_dim,
+        hidden_dim,
+        num_layers=2,
+        dropout=0.3
+    ):
+        super().__init__()
 
-class SequencePredictor(nn.Module):
-    def __init__(self, text_autoencoder, latent_dim,
-                 gru_hidden_dim):
-        super(SequencePredictor, self).__init__()
-        # --- 1. Encoders ---
-        self.text_encoder = text_autoencoder.encoder  
-        self.obj_encoder = text_autoencoder.encoder  
-        self.act_encoder = text_autoencoder.encoder 
+        self.embedding = nn.Embedding(vocab_size, emb_dim)
 
-        # --- 2. gate ---
-        self.gate_layer = nn.Linear(latent_dim * 2, latent_dim) 
-
-        # --- 3. Temporal Encoder ---
-        fusion_dim = latent_dim * 2 # z_conditions fuse + z_text
-        self.temporal_rnn = nn.GRU(fusion_dim, latent_dim, batch_first=True)
-
-        # --- 4. Attention ---
-        self.attention = Attention(gru_hidden_dim)
-
-        # --- 4. Final Projection ---
-        # cat(h, context) -> gru_hidden_dim * 2
-        self.projection = nn.Sequential(
-            nn.Linear(gru_hidden_dim * 2, latent_dim),
-            nn.ReLU()
+        self.gru = nn.GRU(
+            emb_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0
         )
-        # --- 5. Decoders ---
-        # (These predict the *next* item)
-        self.text_decoder = text_autoencoder.decoder
 
-        self.fused_to_h0 = nn.Linear(latent_dim, 32)
-        self.fused_to_c0 = nn.Linear(latent_dim, 32)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
 
-    def forward(self, obj_seq, act_seq, desc_seq, target_seq):
-        batch_size, seq_len, _ = desc_seq.shape
+    def forward(self, input_ids, h0):
+        emb = self.embedding(input_ids)      # [B, T, E]
+        out, _ = self.gru(emb, h0)            # [B, T, H]
+        out = self.dropout(out)
+        logits = self.fc(out)                 # [B, T, V]
+        return logits
+# @title Bert wrapper
+class BertAutoencoderWrapper(nn.Module):
+    def __init__(self, bert_mlm_model):
+        super().__init__()
+        self.bert = bert_mlm_model.bert        # encoder
+        self.cls = bert_mlm_model.cls          # MLM head
 
-        # --- 1 & 2: Run Static Encoders over the sequence ---
-        # Reshape for text_encoders
-        desc_flat = desc_seq.view(batch_size * seq_len, -1) # -1 infers text_len
-        obj_flat = obj_seq.view(batch_size * seq_len, -1)
-        act_flat = act_seq.view(batch_size * seq_len, -1)
+    def encoder(self, input_ids):
+        """
+        Returns (dummy_output, hidden, cell)
+        We'll use the [CLS] token embedding as 'hidden'.
+        """
+        outputs = self.bert(input_ids)
+        hidden_state = outputs.last_hidden_state
+        cls_token = hidden_state[:, 0, :]
+        return None, cls_token.unsqueeze(0), None
 
-        # Run encoders
-        _, desc_hidden, _ = self.text_encoder(desc_flat)
-        _, obj_hidden, _ = self.obj_encoder(obj_flat)
-        _, act_hidden, _ = self.act_encoder(act_flat)
+    def decoder(self, input_ids, h0, c0):
+        outputs = self.bert(input_ids)
+        sequence_output = outputs.last_hidden_state
+        prediction_scores = self.cls(sequence_output)
+        # return logits in same format as before
+        return prediction_scores, h0, c0
 
-        desc_hidden = desc_hidden.squeeze(0)
-        obj_hidden = obj_hidden.squeeze(0)
-        act_hidden = act_hidden.squeeze(0)
+class SequencePredictorCached(nn.Module):
+    def __init__(self, latent_dim, vocab_size):
+        super().__init__()
+
+        # projections
+        self.text_proj = nn.Linear(768, latent_dim)
+        self.obj_proj  = nn.Linear(768, latent_dim)
+        self.act_proj  = nn.Linear(768, latent_dim)
+
 
         # Gating
-        cond = torch.cat([obj_hidden, act_hidden], dim=-1) # concatinate objects and actions as one feature
-        gate = torch.sigmoid(self.gate_layer(cond)) # gate 
-        conditioned_desc = desc_hidden * gate  # apply on desc
-        conditioned_seq = conditioned_desc.view(batch_size, seq_len, -1) 
+        self.gate_layer = nn.Linear(latent_dim * 2, latent_dim)
 
-        # Temporal 
-        # zseq shape: [b, s, gru_hidden]
-        # h    shape: [1, b, gru_hidden]
-        zseq, h = self.temporal_rnn(conditioned_seq)
-        h = h.squeeze(0)
+        # Temporal
+        self.temporal_rnn = nn.GRU(latent_dim, latent_dim, batch_first=True)
 
-        # --- 4. Attention ---
-        context = self.attention(zseq)
+        # Attention over frames
+        self.attention = Attention(latent_dim)
 
-        # --- 5. Final Prediction Vector (z) ---
-        z = self.projection(torch.cat((h, context), dim=1)) # Shape: [b, joint_latent_dim]
+        # Final fusion
+        self.projection = nn.Sequential(
+            nn.Linear(latent_dim * 2, latent_dim),
+            nn.ReLU()
+        )
 
-        # --- 6. Decode (Predict pk) ---
+        # decoder
+        self.text_decoder = TextDecoderGRU(
+            vocab_size=vocab_size,
+            emb_dim=latent_dim,
+            hidden_dim=latent_dim,
+            num_layers=2,
+            dropout=0.1
+        )
 
-        h0 = self.fused_to_h0(z).unsqueeze(0)
-        c0 = self.fused_to_c0(z).unsqueeze(0)
+    def forward(self, desc_emb, obj_emb, act_emb, target_seq):
 
-        decoder_input = target_seq[:, :,:-1].squeeze(1)
+        # Project BERT CLS per frame
+        desc = self.text_proj(desc_emb)  # [B, S, D]
+        obj  = self.obj_proj(obj_emb)
+        act  = self.act_proj(act_emb)
 
-        # 3. Run the decoder *once* on the entire sequence.
-        # It takes the encoder's final state (hidden, cell)
-        # and the full "teacher" sequence (decoder_input).
-        predicted_text_logits_k, _, _ = self.text_decoder(decoder_input, h0, c0)
-        # return pred_image_content, pred_image_context, predicted_text_logits_k,h0, c0
-        return  predicted_text_logits_k,h0, c0
-    
-def trainingLoop(sequence_predictor,train_dataloader,tokenizer,N_EPOCHS):
-    # @title Training tools
-    criterion_text = nn.CrossEntropyLoss(ignore_index=tokenizer.convert_tokens_to_ids(tokenizer.pad_token))
-    optimizer = torch.optim.Adam(sequence_predictor.parameters(), lr=0.001)
+        # conditioning
+        cond = torch.cat([obj, act], dim=-1)     # [B, S, 2D]
+        gate = torch.sigmoid(self.gate_layer(cond))
+        desc = desc * gate                       # [B, S, D]
+
+        # Temporal
+        zseq, _ = self.temporal_rnn(desc)        # [B, S, D]
+
+        # Attention
+        context = self.attention(zseq)           # [B, D]
+        h_last  = zseq[:, -1]                    # [B, D]
+
+        # Fuse
+        z = self.projection(torch.cat([h_last, context], dim=1))
+
+        # Decoder init
+        h0 = z.unsqueeze(0).repeat(
+            self.text_decoder.gru.num_layers, 1, 1
+        )
+
+        # Teacher forcing
+        decoder_input = target_seq[:, :-1]
+        logits = self.text_decoder(decoder_input, h0)
+
+        return logits
+# @title Load cached embeddings to speed the training
+class CachedSequenceDataset(torch.utils.data.Dataset):
+    def __init__(self, cache_path):
+        data = torch.load(cache_path)
+        self.desc = data["desc"]
+        self.obj = data["obj"]
+        self.act = data["act"]
+        self.target = data["target"]
+
+    def __len__(self):
+        return len(self.target)
+
+    def __getitem__(self, idx):
+        return (
+            self.desc[idx],
+            self.obj[idx],
+            self.act[idx],
+            self.target[idx]
+        )
+
+def trainingLoop(sequence_predictor,train_dataloader_c,val_dataloader_c,tokenizer,criterion_text,scheduler,N_EPOCHS):
+    # @title Training loop for the sequence predictor
+    SEMANTIC_START_EPOCH = 10
+    SEMANTIC_WEIGHT = 0.1
+
+    start_epoch = 0
+
+    try:
+        sequence_predictor, optimizer, last_epoch, _ = load_checkpoint_from_drive(
+            sequence_predictor,
+            optimizer,
+            filename=f"sequence_predictor_decoder{start_epoch}.pth"
+        )
+        start_epoch = last_epoch + 1
+    except FileNotFoundError:
+        print("Starting from scratch")
 
     sequence_predictor.train()
-    losses = []
-    for epoch in range(N_EPOCHS):
+    train_losses = []
+    val_losses   = []
 
+    val_rouge_l  = []
+    val_sem_sim  = []
+    print('haha')
+    print(len(train_dataloader_c))
+    for epoch in range(start_epoch, N_EPOCHS):
         running_loss = 0.0
-        for descriptions, objects, actions, text_target in train_dataloader:
+        for step,(descriptions, objects, actions, text_target)  in enumerate(train_dataloader_c):
             # Send images and tokens to the GPU
             descriptions = descriptions.to(device)
             act_seq = actions.to(device)
@@ -229,7 +304,9 @@ def trainingLoop(sequence_predictor,train_dataloader,tokenizer,N_EPOCHS):
             text_target = text_target.to(device)
 
             # Predictions from our model
-            predicted_text_logits, _, _ = sequence_predictor(descriptions, obj_seq, act_seq, text_target)
+            predicted_text_logits = sequence_predictor(
+                descriptions,obj_seq, act_seq , text_target
+            )
             # Computing losses
 
             # Loss function for the text prediction
@@ -237,57 +314,154 @@ def trainingLoop(sequence_predictor,train_dataloader,tokenizer,N_EPOCHS):
             target_labels = text_target.squeeze(1)[:, 1:] # Slice to get [8, 119]
             target_flat = target_labels.reshape(-1)
             loss = criterion_text(prediction_flat, target_flat)
-            # Combining the losses
-            # loss = loss_im + loss_text + 0.2*loss_context
+
+            # ---- semantic auxiliary loss after 10 epochs ----
+            if epoch >= SEMANTIC_START_EPOCH:
+                was_training = sequence_predictor.training
+                sequence_predictor.eval()
+                with torch.no_grad():
+                    pred_text = generate(
+                        sequence_predictor,
+                        descriptions[:1],
+                        obj_seq[:1],
+                        act_seq[:1],
+                        tokenizer=tokenizer,
+                        max_len=120,
+                        temperature=0.7
+                    )
+
+                if was_training:
+                    sequence_predictor.train()               # restore state
+
+                ref_text = tokenizer.decode(
+                    text_target[0],
+                    skip_special_tokens=True
+                )
+
+            sem_loss = semantic_loss([pred_text], [ref_text])
+
+            loss = loss + SEMANTIC_WEIGHT * sem_loss
             # Optimizing
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * descriptions.size(0)
 
-        # checking model performance on validation set
-        sequence_predictor.eval()
-        print("Validation on training dataset")
-        print( "----------------")
-        validation( sequence_predictor, train_dataloader )
-        print("Validation on validation dataset")
-        print( "----------------")
-        validation( sequence_predictor, val_dataloader)
-        sequence_predictor.train()
+            sequence_predictor.eval()
 
-        # scheduler.step()
-        epoch_loss = running_loss / len(train_dataloader.dataset)
-        losses.append(epoch_loss)
-        print(f'Epoch [{epoch+1}/{N_EPOCHS}], Loss: {epoch_loss:.4f}')
+            avg_train_loss = running_loss / len(train_dataloader_c.dataset)
+            train_losses.append(avg_train_loss)
 
-        if epoch % 5 == 0:
-            save_checkpoint_to_drive(sequence_predictor, optimizer, epoch, epoch_loss, filename=f"sequence_predictor.pth")
-    return losses
+            # ---------------- VALIDATION ----------------
+            sequence_predictor.eval()
+
+            val_loss, rouge_l_val, sem_sim_val = validation(
+                sequence_predictor,
+                val_dataloader_c,
+                criterion_text
+            )
+
+            val_losses.append(val_loss)
+            val_rouge_l.append(rouge_l_val)
+            val_sem_sim.append(sem_sim_val)
+
+            print(
+                f"Epoch {epoch+1:02d} | "
+                f"Train Loss: {avg_train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"ROUGE-L: {rouge_l_val:.4f} | "
+                f"Semantic: {sem_sim_val:.4f}"
+            )
+
+            scheduler.step(val_loss)
+            sequence_predictor.train()
+
+            if (epoch + 1) % 5 == 0:
+                save_checkpoint_to_drive(
+                    sequence_predictor,
+                    optimizer,
+                    epoch + 1,
+                    avg_train_loss,
+                    filename=f"sequence_predictor_decoder{epoch+1}.pth"
+                )
+    plotSequancePredcition(train_losses,val_losses,val_rouge_l,val_sem_sim,sequence_predictor,val_dataloader_c,criterion_text)
 
 
 def __init__():
-    N_EPOCHS=25
-    latent_dim = 32  
-    gru_hidden_dim = 32
-    tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased")
-    sequenceDataLoader=0
+    # @title For the Sequence prediction task
+    tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",  padding=True, truncation=True)
+    sp_train_dataset = SeqTextPredictionDataset(train_dataset, tokenizer, window_size=5, stride=3)
+    sp_test_dataset  = SeqTextPredictionDataset(test_dataset,  tokenizer, window_size=5, stride=3)
+    print(len(sp_train_dataset))
+    print(len(sp_test_dataset))
+    # Let's do things properly, we will also have a validation split
+    # Split the training dataset into training and validation sets
+    train_size = int(0.8 * len(sp_train_dataset))
+    val_size = len(sp_train_dataset) - train_size
+    train_subset, val_subset = random_split(sp_train_dataset, [train_size, val_size])
+    print(sp_train_dataset)
+    print(sp_test_dataset)
 
-    text_autoencoder = BertForMaskedLM.from_pretrained("google-bert/bert-base-uncased")
-    text_autoencoder.load_state_dict(
-        torch.load("/content/drive/MyDrive/bert_mlm_finetuned.pth", map_location=device)
-    )
+    # test_dataloader = DataLoader(sp_test_dataset, batch_size=32, shuffle=False)
+
+    # @title Text autoencoder before caching Bert
+
+    from transformers import BertTokenizer, BertForMaskedLM
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    N_EPOCHS=50
+    tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased")
+    criterion_text = nn.CrossEntropyLoss(ignore_index=tokenizer.convert_tokens_to_ids(tokenizer.pad_token))
+
+
+    bert_mlm  = BertForMaskedLM.from_pretrained("google-bert/bert-base-uncased")
+    if RUNNING_ON_COLAB:
+        bert_mlm.load_state_dict(
+            torch.load("/content/gdrive/MyDrive/bert_mlm_finetuned.pth", map_location=device)
+        )
+    else:
+        bert_mlm.load_state_dict(
+            torch.load(r"G:\My Drive\bert_mlm_finetuned.pth", map_location=device)
+        )
+
+    text_autoencoder = BertAutoencoderWrapper(bert_mlm).to(device)
+    # freeze
     for param in text_autoencoder.parameters():
         param.requires_grad = False
-    text_autoencoder.to(device)
-    text_autoencoder.eval()
+    bert_trainable = sum(p.numel() for p in text_autoencoder.parameters() if p.requires_grad)
+    print(f"BERT trainable params: {bert_trainable}")
 
-    sequence_predictor = SequencePredictor(
-        text_autoencoder=text_autoencoder,
-        latent_dim=latent_dim,
-        gru_hidden_dim=gru_hidden_dim
+    text_autoencoder.eval()
+    # no need to run this part we have the files saved on drive
+    # cach_data("train", train_dataloader,text_autoencoder)
+    # cach_data("val", val_dataloader,text_autoencoder)
+    # cach_data("test", test_dataloader,text_autoencoder)
+
+    # @title Main pipline cached
+
+    # load cached data first 
+    cached_dataset = CachedSequenceDataset("/content/gdrive/MyDrive/BERTcach/cached_bert_embeddings_train.pt")
+    cached_dataset_val = CachedSequenceDataset("/content/gdrive/MyDrive/BERTcach/cached_bert_embeddings_val.pt")
+    # cached_dataset_test = CachedSequenceDataset("/content/gdrive/MyDrive/BERTcach/cached_bert_embeddings_test.pt")
+    train_dataloader_c = DataLoader(cached_dataset, batch_size=64, shuffle=True)
+    val_dataloader_c = DataLoader(cached_dataset_val, batch_size=32, shuffle=True)
+    # test_dataloader_c = DataLoader(cached_dataset_test, batch_size=16, shuffle=False)
+    sequence_predictor = SequencePredictorCached(
+        latent_dim=128,
+        vocab_size=tokenizer.vocab_size
     ).to(device)
 
-    losses=trainingLoop(sequence_predictor,sequenceDataLoader,tokenizer,N_EPOCHS)
-    # Do better plots
-    plt.plot(losses)
-    plt.show()
+    # Print model size
+    predictor_trainable = sum(p.numel() for p in sequence_predictor.parameters() if p.requires_grad)
+    print(f"Predictor trainable params: {predictor_trainable}")
+
+    optimizer = torch.optim.Adam(sequence_predictor.parameters(),  lr=0.001)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=3,
+    )
+
+    losses=trainingLoop(sequence_predictor,train_dataloader_c,val_dataloader_c,tokenizer,criterion_text,scheduler,N_EPOCHS)
+    plotSequancePredcition(train_losses,val_losses,val_rouge_l,val_sem_sim,sequence_predictor,test_dataloader_c,criterion_text)
