@@ -71,8 +71,7 @@ To better focus on textual reasoning and temporal coherence, the architecture wa
 "theese embeddings are cached to reduce trainig time and memory"
 - Multi Conditioning with Gating: objects and actions using gated fusion instead of concatentaion.
 - GRU-Based Text Decoder: This part was added as a replacement for Bert MLM decoder as the final latent vector decoder.
-- semantic loss was used to assist 
-- ROUGE-L and Cosine similarity was used to assist the validation 
+- auxiliary semantic loss was introduced to help the model learn the meaning not just the exact word matching.
 #### Code Snippet 
 ```python
 def forward(self, desc_emb, obj_emb, act_emb, target_seq):
@@ -119,6 +118,10 @@ class TextDecoderGRU(nn.Module):
     ):
 ...
 ```
+### human Evaluation
+based on humen evaluation the model was able to learn objectives like Scene type, Mood / atmosphere and Visual concepts (walls, window, car, indoor/outdoor) and text structure.
+But, failed to learn entities ,event or coherent story alignment.  
+
 ## Results
 - training loss `results/images/description loss.txt`
 - training metrics `results/images/description metrics.txt`
@@ -140,16 +143,14 @@ fine tuning was done to get a realistc style images, to make it close as much as
 - training log `results/images/Lora training log.txt`
 
 ---
-### Conclustion
-### Results and Discussion
 
-The redesigned sequence-to-text model produced descriptions that were generally more coherent and semantically aligned with the story context compared to the baseline. Conditioning on objects and actions helped reduce vague or generic outputs, while the GRU-based decoder enabled more stable autoregressive generation.
+### Conclusion
 
-However, the model occasionally generated repetitive or overly generic phrases, particularly in scenes with limited visual diversity. While automatic metrics showed modest improvements, qualitative inspection revealed clearer gains in narrative consistency than raw scores alone.
+In this project, the original end-to-end storytelling pipeline was restructured into a modular, two-stage framework that separates **reasoning in language** from **image generation**.
+
+Overall, the new pipeline demonstrates improved results compared to the baseline. The separation of concerns between text reasoning and image generation not only simplified training and debugging, but also made the system more extensible for future improvements. Despite remaining limitations such as repetitive phrasing and limited visual story elements, the project successfully validates the proposed design choices and provides a strong foundation for further work.
 
 ## Future Work
 
-- External knowledge integration
-- Longer story contexts
-- Multi-head reasoning states
-- Human evaluation studies
+- conditining previous frames to genrate the image
+- find a solution to link charecters to the story prediction
