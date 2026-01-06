@@ -1,11 +1,19 @@
+### full folders link on drive ###
+https://drive.google.com/drive/folders/14hQY4DFJE17mKbRrY3F9YkW3w2VLjPey?usp=sharing
+
+
 ### BERT MLM model fine tuned ###
-https://drive.google.com/file/d/156WeIgMDgDNT-pjdkodQKt5iM88GSGdM/view?usp=sharing
+bert_mlm_finetuned.pth
 
 ### Original LSTM model fine tuned ###
-https://drive.google.com/file/d/1y7BmOuMn3ofa21nJOXgRiJm3URXdgr99/view?usp=sharing
-
-### LoRA fine-tuned model ###
-https://drive.google.com/drive/folders/15M552VM9fApu-T7fscVtiKMU8fsgUhTn?usp=sharing
+LSTM text autoencoder fine-tuned.pth
 
 ### cached BERT Embeddings files ###
-https://drive.google.com/drive/folders/108hY07ZHU221uHVLngI_FlfOVPwAE9s2?usp=sharing
+BERTcach
+
+### final description model ###
+final sequence_predictor50.pth
+
+### LoRA fine-tuned model ###
+lora-output
+
