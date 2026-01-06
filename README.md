@@ -154,3 +154,7 @@ Overall, the new pipeline demonstrates improved results compared to the baseline
 
 - conditining previous frames to genrate the image
 - find a solution to link charecters to the story prediction
+
+
+## link to the models files (important for testing on colab)
+https://drive.google.com/drive/folders/14hQY4DFJE17mKbRrY3F9YkW3w2VLjPey?usp=sharing
